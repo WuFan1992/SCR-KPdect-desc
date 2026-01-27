@@ -1,35 +1,23 @@
-import torch
-from itertools import combinations
 
-def pairwise_combinations(nums):
-    """
-    nums: List[int]
-    return: List[List[int]]  # all unordered unique pairs
-    """
-    return [list(pair) for pair in combinations(nums, 2)]
+import numpy as np
+import math
 
-def remove_duplicates_imgids(pair_list):
-    """
-    pair_list: List[List[int]]
-        Each element has length 2, e.g. [[a, b], [c, d], ...]
-    
-    return:
-        A list with unordered duplicates removed
-        ([a, b] and [b, a] are considered the same)
-    """
-    x = torch.tensor(pair_list)   # shape: (N, 2)
+def fov2focal(fov, pixels):
+    return pixels / (2 * math.tan(fov / 2))
 
-    # Sort each row so that [a, b] and [b, a] become the same representation
-    x_sorted, _ = torch.sort(x, dim=1)  # shape: (N, 2)
+def focal2fov(focal, pixels):
+    return 2*math.atan(pixels/(2*focal))
 
-    # Remove duplicates row-wise
-    unique_x_sorted, indices = torch.unique(
-        x_sorted,
-        dim=0,
-        return_inverse=False,
-        return_counts=False,
-        sorted=False
-    )
+def getIntrinsic(FoVx, width, height):
+    K = np.eye(3)
+    focal_length = fov2focal(FoVx, width)
+    K[0, 0] = K[1, 1] = focal_length
+    K[0, 2] = width / 2
+    K[1, 2] = height / 2
+    return K
 
-    # Convert back to Python list
-    return unique_x_sorted.tolist()
+def getExtrinsic(R, t):
+    pose = np.eye(4)
+    pose[:3,:3] = R
+    pose[:3,3] = t
+    return pose
