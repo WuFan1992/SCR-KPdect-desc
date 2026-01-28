@@ -90,15 +90,7 @@ def readSceneInfo(path):
     image_name_list, depth_name_list, intrinsics_list, pose_list = readColmapCameras(cam_extrinsics, cam_intrinsics)
 
     return image_name_list, depth_name_list, intrinsics_list, pose_list
-
-    
-    
-
-
-    
-    
-    
-
+   
 
 def create_npz(data_path, save_path):
     
