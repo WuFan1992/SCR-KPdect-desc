@@ -12,9 +12,6 @@ class Launcher(object):
         if not test_only:
             self.trainer = Trainer(cfg)
 
-        if cfg.TRAIN.auto_resume:
-            self.resume_model(cfg.LOG.path)
-
     def run_train(self):
         self.trainer.train_iters(self.cfg.TRAIN.model_save_iters)
 

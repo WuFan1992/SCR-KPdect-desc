@@ -4,157 +4,204 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from modules.dataset.megadepth.utils import read_megadepth_gray, read_megadepth_depth, fix_path_from_d2net
-import numpy.random as rnd
+from scene_utils import crop_by_intrinsic
+from reader import load_one_img
 
-
-class SevenSceneDataset(Dataset):
+class BaseDataset(Dataset):
     def __init__(self,
-                 root_dir,
-                 npz_path,
+                 cfg,
+                 transform,
                  mode='train',
-                 load_depth = True,
-                 img_resize = (800,608), #or None
-                 df=32,
-                 img_padding=False,
-                 depth_padding=True,
                  augment_fn=None,
                  **kwargs):
-        """
-        Manage one scene(npz_path) of MegaDepth dataset.
-        
-        Args:
-            root_dir (str): megadepth root directory that has `phoenix`.
-            npz_path (str): {scene_id}.npz path. This contains image pair information of a scene.
-            mode (str): options are ['train', 'val', 'test']
-            min_overlap_score (float): how much a pair should have in common. In range of [0, 1]. Set to 0 when testing.
-            img_resize (int, optional): the longer edge of resized images. None for no resize. 640 is recommended.
-                                        This is useful during training with batches and testing with memory intensive algorithms.
-            df (int, optional): image size division factor. NOTE: this will change the final image size after img_resize.
-            img_padding (bool): If set to 'True', zero-pad the image to squared size. This is useful during training.
-            depth_padding (bool): If set to 'True', zero-pad depthmap to (2000, 2000). This is useful during training.
-            augment_fn (callable, optional): augments images with pre-defined visual effects.
+        """    
         """
         super().__init__()
-        self.root_dir = root_dir
+        self.ref_topk = cfg.ref_topk
+        self.root_dir = cfg.root_dir
+        self.pad_image = cfg.pad_image
         self.mode = mode
-        self.scene_id = npz_path.split('.')[0]
-        self.load_depth = load_depth
+        self.img_K = None
+        self.depth_K = None
+        self.load_depth = cfg.load_depth
         # prepare scene_info and pair_info
-        self.scene_info = np.load(npz_path, allow_pickle=True)
+        self.scene_info = np.load(cfg.npz_path, allow_pickle=True)
         self.pair_infos = self.scene_info['pair_infos'].copy()
-        del self.scene_info['pair_infos']
         
-
-        # parameters for image resizing, padding and depthmap padding
-        if mode == 'train':
-            assert img_resize is not None #and img_padding and depth_padding
-
-        self.img_resize = img_resize
-        self.df = df
-        self.img_padding = img_padding
-        self.depth_max_size = 2000 if depth_padding else None  # the upperbound of depthmaps size in megadepth.
 
         # for training LoFTR
         self.augment_fn = augment_fn if mode == 'train' else None
         self.coarse_scale = getattr(kwargs, 'coarse_scale', 0.125)
-        #pdb.set_trace()
-        for idx in range(len(self.scene_info['image_paths'])):
-            self.scene_info['image_paths'][idx] = fix_path_from_d2net(self.scene_info['image_paths'][idx])
-
-        for idx in range(len(self.scene_info['depth_paths'])):
-            self.scene_info['depth_paths'][idx] = fix_path_from_d2net(self.scene_info['depth_paths'][idx])
-
+        
+        self.crop_img_func = None
+        self.crop_depth_func = None
+        
+        self.transform = transform
+        
 
     def __len__(self):
         return len(self.pair_infos)
+    
+    def load_query(self, idx, base_dir):
+        
+        pose_tensor= []
+        K_tensor=[]
+        depth_tensor=[]
+        img_tensor=[]
+        img, depth, pose, K = load_one_img(base_dir, self.scene_info, idx, read_img=True)
+        
+        if self.crop_img_func is not None:  # 如果要裁剪img，同时更新相机内参
+            img, K = self.crop_img_func(img, K)
+        if self.crop_depth_func is not None: #如果要裁剪深度图，同时更新相机内参
+            depth, K = self.crop_depth_func(depth, K)
+        
+        img, depth, pose, K = self.transform(img, depth, pose, K)
+        
+        pose_tensor.append(pose)
+        K_tensor.append(K)
+        depth_tensor.append(depth)
+        img_tensor.append(img)
+        
+        pose_tensor = np.stack(pose_tensor).astype(np.float32)  # 将list 变成 nadrray
+        K_tensor = np.stack(K_tensor).astype(np.float32)
+        depth_tensor = np.stack(depth_tensor).astype(np.float32)
+        
+        result = {
+            "pose": pose_tensor,
+            "K": K_tensor,
+            "depth": depth_tensor,
+            "img": np.stack(img_tensor).astype(np.float32).transpose(0, 3, 1, 2),
+        }
+        return result
+        
+    def load_references(self, idx, base_dir):
+        
+        pose_tensor= []
+        K_tensor=[]
+        depth_tensor=[]
+        img_tensor=[]
+        idx = int(idx)
+        # Get the reference index for "idx"th data
+        ref_idxs = self.scene_info["ref_infos"][idx]
+        
+        # For each idx
+        for idx in ref_idxs:
+            idx=int(idx)
+            img, depth, pose, K = load_one_img(base_dir, self.scene_info, idx, read_img=True)
+        
+            if self.crop_img_func is not None:  # 如果要裁剪img，同时更新相机内参
+                img, K = self.crop_img_func(img, K)
+            if self.crop_depth_func is not None: #如果要裁剪深度图，同时更新相机内参
+                depth, K = self.crop_depth_func(depth, K)
+            
+            img, depth, pose, K = self.transform(img, depth, pose, K)
+            
+            pose_tensor.append(pose)
+            K_tensor.append(K)
+            depth_tensor.append(depth)
+            img_tensor.append(img)
+
+            if len(pose_tensor) == self.ref_topk:
+                break
+        if self.pad_image and len(pose_tensor) < self.ref_topk:
+            pose_tensor = pose_tensor + [pose_tensor[0]] * (
+                self.ref_topk - len(pose_tensor)
+            )
+            K_tensor = K_tensor + [K_tensor[0]] * (self.ref_topk - len(K_tensor))
+            depth_tensor = depth_tensor + [depth_tensor[0]] * (
+                self.ref_topk - len(depth_tensor)
+            )
+            img_tensor = img_tensor + [img_tensor[0]] * (
+                self.ref_topk - len(img_tensor)
+            )
+        
+        pose_tensor = np.stack(pose_tensor).astype(np.float32)  # 将list 变成 nadrray
+        K_tensor = np.stack(K_tensor).astype(np.float32)
+        depth_tensor = np.stack(depth_tensor).astype(np.float32)
+
+        result = {
+            "pose": pose_tensor,
+            "K": K_tensor,
+            "depth": depth_tensor,
+            "img": np.stack(img_tensor).astype(np.float32).transpose(0, 3, 1, 2),  
+        } 
+        
+        return result
+        
+            
+        
 
     def __getitem__(self, idx):
         (idx0, idx1) = self.pair_infos[idx % len(self)]
+        idx, idx0, idx1 = int(idx), int(idx0), int(idx1)
+        # Get the pair training 
+        base_dir = osp.join(self.root_dir, "datasets/head/images") 
 
-        # read grayscale image and mask. (1, h, w) and (h, w)
-        img_name0 = osp.join(self.root_dir, self.scene_info['image_paths'][idx0])
-        img_name1 = osp.join(self.root_dir, self.scene_info['image_paths'][idx1])
+        res_image0 = self.load_query(idx0, base_dir)
+        res_image1 = self.load_query(idx1, base_dir)
+        # -------- intrinsics (numpy) --------
+        K_0 = np.array(res_image0["K"][0], dtype=np.float32)  # (3, 3)
+        K_1 = np.array(res_image1["K"][0], dtype=np.float32)  # (3, 3)
+
+        # -------- poses (numpy) --------
+        T0 = np.array(res_image0['pose'][0], dtype=np.float32)
+        T1 = np.array(res_image1['pose'][0], dtype=np.float32)
+
+        # T_0to1 = T1 * inv(T0)
+        T_0to1 = np.matmul(T1, np.linalg.inv(T0)).astype(np.float32)[:4, :4]  # (4, 4)
+
+        # T_1to0 = inverse(T_0to1)
+        T_1to0 = np.linalg.inv(T_0to1).astype(np.float32)  # (4, 4)
+
+        pair_data = {
+            'image0': np.array(res_image0["img"][0], dtype=np.float32),    # (C, H, W)
+            'depth0': np.array(res_image0["depth"][0], dtype=np.float32),  # (H, W)
+            'image1': np.array(res_image1["img"][0], dtype=np.float32),
+            'depth1': np.array(res_image1["depth"][0], dtype=np.float32),
+
+            'T_0to1': T_0to1,   # (4, 4)
+            'T_1to0': T_1to0,   # (4, 4)
+
+            'K0': K_0,         # (3, 3)
+            'K1': K_1,         # (3, 3)
+
+            'dataset_name': '7 scene',
+            'pair_id': idx,
+            'pair_names': (
+            self.scene_info['image_paths'][idx0],
+            self.scene_info['image_paths'][idx1]
+            ),
+        }
         
-        # TODO: Support augmentation & handle seeds for each worker correctly.
-        image0, mask0, scale0 = read_megadepth_gray(
-            img_name0, self.img_resize, self.df, self.img_padding, None)
-            # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
-        image1, mask1, scale1 = read_megadepth_gray(
-            img_name1, self.img_resize, self.df, self.img_padding, None)
-            # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
+        # Get the reference images
+        res_ref = self.load_references(idx,base_dir)
+        
+        return pair_data, res_ref
+        
+        
+        
 
-        if self.load_depth:
-            # read depth. shape: (h, w)
-            if self.mode in ['train', 'val']:
-                depth0 = read_megadepth_depth(
-                    osp.join(self.root_dir, self.scene_info['depth_paths'][idx0]), pad_to=self.depth_max_size)
-                depth1 = read_megadepth_depth(
-                    osp.join(self.root_dir, self.scene_info['depth_paths'][idx1]), pad_to=self.depth_max_size)
-            else:
-                depth0 = depth1 = torch.tensor([])
 
-            # read intrinsics of original size
-            K_0 = torch.tensor(self.scene_info['intrinsics'][idx0].copy(), dtype=torch.float).reshape(3, 3)
-            K_1 = torch.tensor(self.scene_info['intrinsics'][idx1].copy(), dtype=torch.float).reshape(3, 3)
 
-            # read and compute relative poses
-            T0 = self.scene_info['poses'][idx0]
-            T1 = self.scene_info['poses'][idx1]
-            T_0to1 = torch.tensor(np.matmul(T1, np.linalg.inv(T0)), dtype=torch.float)[:4, :4]  # (4, 4)
-            T_1to0 = T_0to1.inverse()
 
-            data = {
-                'image0': image0,  # (1, h, w)
-                'depth0': depth0,  # (h, w)
-                'image1': image1,
-                'depth1': depth1,
-                'T_0to1': T_0to1,  # (4, 4)
-                'T_1to0': T_1to0,
-                'K0': K_0,  # (3, 3)
-                'K1': K_1,
-                'scale0': scale0,  # [scale_w, scale_h]
-                'scale1': scale1,
-                'dataset_name': 'MegaDepth',
-                'scene_id': self.scene_id,
-                'pair_id': idx,
-                'pair_names': (self.scene_info['image_paths'][idx0], self.scene_info['image_paths'][idx1]),
-            }
 
-            # for LoFTR training
-            if mask0 is not None:  # img_padding is True
-                if self.coarse_scale:
-                    [ts_mask_0, ts_mask_1] = F.interpolate(torch.stack([mask0, mask1], dim=0)[None].float(),
-                                                        scale_factor=self.coarse_scale,
-                                                        mode='nearest',
-                                                        recompute_scale_factor=False)[0].bool()
-                data.update({'mask0': ts_mask_0, 'mask1': ts_mask_1})
 
-        else:
-            
-            # read intrinsics of original size
-            K_0 = torch.tensor(self.scene_info['intrinsics'][idx0].copy(), dtype=torch.float).reshape(3, 3)
-            K_1 = torch.tensor(self.scene_info['intrinsics'][idx1].copy(), dtype=torch.float).reshape(3, 3)
+class SevenSceneDataset(BaseDataset):
+    def __init__(self,
+                 cfg,
+                 transform,
+                 mode='train',
+                 augment_fn=None):
+        super().__init__(cfg, transform, mode, augment_fn)
 
-            # read and compute relative poses
-            T0 = self.scene_info['poses'][idx0]
-            T1 = self.scene_info['poses'][idx1]
-            T_0to1 = torch.tensor(np.matmul(T1, np.linalg.inv(T0)), dtype=torch.float)[:4, :4]  # (4, 4)
-            T_1to0 = T_0to1.inverse()
+        self.depth_K = np.asarray(
+            [[585, 0, 320], [0, 585, 240], [0, 0, 1]], dtype=np.float32
+        )
+        self.img_K = np.asarray(
+            [[525, 0, 320], [0, 525, 240], [0, 0, 1]], dtype=np.float32
+        )
+        self.crop_img_func = self.crop_img  # 7 scene 的样本是480x640 而网络的输出固定为192x256 所以需要resize ，但是
+                                            # 单纯resize 会破坏几何机构，所以需要crop 操作
 
-            data = {
-                'image0': image0,  # (1, h, w)
-                'image1': image1,
-                'T_0to1': T_0to1,  # (4, 4)
-                'T_1to0': T_1to0,
-                'K0': K_0,  # (3, 3)
-                'K1': K_1,
-                'scale0': scale0,  # [scale_w, scale_h]
-                'scale1': scale1,
-                'dataset_name': 'MegaDepth',
-                'scene_id': self.scene_id,
-                'pair_id': idx,
-                'pair_names': (self.scene_info['image_paths'][idx0], self.scene_info['image_paths'][idx1]),
-            }
-
-        return data
+    def crop_img(self, img, K=None, no_none=None):
+        return crop_by_intrinsic(img, self.img_K, self.depth_K), self.depth_K

@@ -44,11 +44,6 @@ class VideoDataset(Dataset):
 
         self.transform = transform
 
-        self.lmdb_data_reader = (
-            None
-            if cfg.lmdb_data_path is False
-            else LMDBModel(cfg.lmdb_data_path, workers=1)
-        )
 
         self.img_H, self.img_W = 480, 640
         self.valid_idx_list = self.reset_valid_list()
@@ -233,7 +228,7 @@ class VideoDataset(Dataset):
 
     # 把一个帧序列的meta 信息(frame) 加载成可以训练的张量序列 img depth pose K
     #  !!!!! 用来加载query sequence !!!!!!!!
-    def load_seq(self, meta_info_list, base_dir):
+    def load_query(self, meta_info_list, base_dir):
         Tcw_tensor = []
         K_tensor = []
         depth_tensor = []
@@ -250,12 +245,8 @@ class VideoDataset(Dataset):
 
             img, depth, Tcw, K = load_one_img(
                 base_dir,
-                meta_info,
-                self.lmdb_data_reader,
+                scene_info,
                 read_img=True,
-                H=self.img_H,
-                W=self.img_W,
-                dataset=self.dataset,
             )
 
             if self.crop_img_func is not None:  # 如果要裁剪img，同时更新相机内参

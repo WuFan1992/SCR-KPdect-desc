@@ -13,6 +13,8 @@ TRAIN:
   reset_optimizer: False
   DATASET:
     type: scannet 
+    root_dir: ../../../
+    npz_path: ./head_7scene.npz
     base_dir: data/scannet
     seq_list_path: deep_retrieve_full.bin # prepared input label, base_dir+seq_list_path
     ref_topk: 5 # scene image number
