@@ -2,13 +2,13 @@ import torch
 import torch.utils.data as data
 import os.path as osp
 
-from dataset import *
-from transform import *
-from sevenscenes import *
+
+from modules.utils.transform import *
+from modules.dataset.sevenscene.sevenscenes import *
 
 
 class Trainer(object):
-    def __init__(self, cfg):
+    def __init__(self, cfg, model):
         self.reproj_loss = cfg.TRAIN.reproj_loss
         self.reproj_loss_scale = cfg.TRAIN.reproj_loss_scale
         self.reproj_loss_start = cfg.TRAIN.reproj_loss_start
@@ -40,7 +40,7 @@ class Trainer(object):
             
         )
 
-
+        self.model = model 
         self.niter = 0
         self.data_loader_iter = iter(self.data_loader)  # 把数据变成迭代器，方便使用next 一个一个获取
       
@@ -55,7 +55,6 @@ class Trainer(object):
 
             q_img = q["image0"].cuda()  # (N T 3 H W)
            
-
             s_img = r["img"].cuda()  # (N L 3 H W)
 
             

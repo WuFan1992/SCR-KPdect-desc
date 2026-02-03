@@ -5,9 +5,13 @@ from PIL import Image
 import PIL
 import numpy as np
 import random
-from geometry import scale_K
+#from .geometry import scale_K
 import math
 
+def scale_K(K, rescale_factor):
+    K = K * rescale_factor
+    K[2, 2] = 1.0
+    return K
 
 class Resize(object):
     def __init__(self, size):

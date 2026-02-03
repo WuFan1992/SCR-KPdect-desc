@@ -1,10 +1,8 @@
-import lmdb
-import sys
+
 import numpy as np
 import cv2
 import os.path as osp
-import os
-import shutil
+
 from skimage.io import imread
 
 
