@@ -192,7 +192,14 @@ class DSMNet(nn.Module):
         return x_2d
 
     def fill_holes(self, feat, coords, mask, feat_up, coords_up, fill_feat=True):
-        coords_up = F.interpolate(coords_up, scale_factor=2, mode="nearest")
+        #coords_up = F.interpolate(coords_up, scale_factor=2, mode="nearest")
+        target_size = coords.shape[-2:]  # 目标尺寸
+
+        coords_up = F.interpolate(
+        coords_up,
+        size=target_size,
+        mode="nearest"
+        )
 
         mask = mask.unsqueeze(1)
         if fill_feat:
@@ -314,8 +321,10 @@ class DSMNet(nn.Module):
         T = q_img.shape[1]
         img = torch.cat([q_img, s_img], dim=1)
         img = img.view(-1, *img.shape[-3:])
-        feat = self.extractor(img)
         
+        print("img size = ", img.shape)
+        feat = self.extractor(img)
+                
         q_feat_pyramid = []
         s_feat_pyramid = []
         for i in range(6 - self.max_pyramid, 7):
@@ -589,6 +598,14 @@ class DSMNet(nn.Module):
                 std.reshape(N, 1, 1, 1) + 1e-5
             ) # 标准化
 
+            if p_coords.shape[-2:] != s_coords_grid.shape[-2:]:
+                p_coords = F.interpolate(
+                p_coords,
+                size=s_coords_grid.shape[-2:],
+                mode="bilinear",
+                align_corners=False
+                )
+
             s_coords_grid = (s_coords_grid - p_coords.unsqueeze(1)) * mask.unsqueeze(2) # 最接近的K个候选source 坐标减去上一个步里坐标的预测，得到差距，
             # 接下来就是要让head 来学习这个差距，从差距中学会预测
             s_coords_grid = s_coords_grid.reshape(N, -1, H, W)
@@ -759,6 +776,9 @@ class DSMNet(nn.Module):
                 q_feat_pyramid, s_feat_pyramid = self.build_feat_pyramid(q_img, s_img)
         else:
             q_feat_pyramid, s_feat_pyramid = self.build_feat_pyramid(q_img, s_img)
+            
+        for q in q_feat_pyramid:
+            print("q size = ", q.shape)
 
         q_Tcw = self.relative_Tcw(r_Tcw.clone(), q_Tcw)
         s_Tcw = self.relative_Tcw(r_Tcw.clone(), s_Tcw)
