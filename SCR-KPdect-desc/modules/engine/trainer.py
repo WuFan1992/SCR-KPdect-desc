@@ -5,6 +5,7 @@ import os.path as osp
 
 from modules.utils.transform import *
 from modules.dataset.sevenscene.sevenscenes import *
+from modules.dataset.sevenscene import sevenscenes_warper
 
 
 class Trainer(object):
@@ -50,7 +51,9 @@ class Trainer(object):
         self.kpnet = kpnet
         self.niter = 0
         self.data_loader_iter = iter(self.data_loader)  # 把数据变成迭代器，方便使用next 一个一个获取
-      
+        
+
+              
 
     def train_iters(self, iter_num):
         if True:
@@ -59,6 +62,14 @@ class Trainer(object):
             except StopIteration:
                 self.data_loader_iter = iter(self.data_loader)
                 q, r = next(self.data_loader_iter)
+                
+                
+            positive_md_coarse = sevenscenes_warper.spvs_coarse(q,4) 
+
+            
+            """ 
+                
+            
 
             q_img = q["image0"].cuda()  # (N T 3 H W)
             q_img_ori = q["image0_ori"].cuda()
@@ -89,9 +100,11 @@ class Trainer(object):
             
             
             
-            print("description map = ", description_map)
-            print("invariance map = ", invariance_map)
-            print("keypoint map = ", keypoints)
             
             
+            print("description map shape = ", description_map.shape)
+            print("invariance map shape = ", invariance_map.shape)
+            print("keypoint map shape = ", keypoints.shape)
+            
+            """
 
