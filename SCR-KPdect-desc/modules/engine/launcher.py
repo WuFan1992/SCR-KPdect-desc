@@ -2,7 +2,8 @@ import yaml
 import torch
 import os.path as osp
 from modules.engine.trainer import Trainer
-
+from modules.arch.DSMNet import dsm_net
+from modules.arch.KPNet import KPNet
 
 
 class Launcher(object):
@@ -10,9 +11,11 @@ class Launcher(object):
         self.cfg = cfg
 
         self.trainer = None
-        self.model = None
+        self.model = dsm_net(cfg.MODEL).cuda()
+        self.kpnet = KPNet().cuda()
+        
         if not test_only:
-            self.trainer = Trainer(cfg, self.model)
+            self.trainer = Trainer(cfg, self.model, self.kpnet)
 
         self.tester = None
 

@@ -315,7 +315,7 @@ class DSMNet(nn.Module):
         img = torch.cat([q_img, s_img], dim=1)
         img = img.view(-1, *img.shape[-3:])
         feat = self.extractor(img)
-
+        
         q_feat_pyramid = []
         s_feat_pyramid = []
         for i in range(6 - self.max_pyramid, 7):
@@ -431,6 +431,51 @@ class DSMNet(nn.Module):
         scene_feat = torch.cat(scene_feat_list, dim=1) # 把所有source 的各自的融合特征图拼起来
         mask = torch.cat(mask_list, dim=1)
         return scene_feat, mask   # scene_feat: (N,L,C,H,W)    mask: (N,L,H,W)
+    
+    
+    def fuse_source_to_query(self, s_feat, q_coords, s_P):
+        """
+        source -> query 特征融合
+
+        s_feat:   (N, L, C, H, W)     source features
+        q_coords: (N, 3, Hq, Wq)      query 像素对应的 3D scene coordinates
+        s_P:      (N, L, 3, 4)        source projection matrices
+        """
+        q_coords = q_coords.squeeze(1)
+
+        N, L, C, H, W = s_feat.shape
+        _, _, Hq, Wq = q_coords.shape
+
+        # 1. 用 query 的 3D 坐标，投影到所有 source view
+        x_2d, m = projection(q_coords, s_P)
+        # x_2d: (N, L, 2, Hq, Wq)
+        # m:    (N, L, Hq, Wq)
+
+        # 2. grid_sample 需要的格式
+        x_2d = x_2d.reshape(N * L, 2, Hq, Wq)
+        x_2d = x_2d.permute(0, 2, 3, 1)          # (N*L, Hq, Wq, 2)
+        x_2d = self.normalize_2d_coords(x_2d, dim=3)
+
+        # 3. 在 source 特征图上采样
+        s_feat_flat = s_feat.reshape(N * L, C, H, W)
+
+        align_feat = F.grid_sample(
+            s_feat_flat, x_2d, mode="bilinear", align_corners=True
+        )  # (N*L, C, Hq, Wq)
+
+        align_feat = align_feat.reshape(N, L, C, Hq, Wq)
+
+        # 4. mask 掉不可投影点
+        align_feat = align_feat * m.unsqueeze(2)
+
+        # 5. 在 source 维度做平均融合
+        fused_feat = align_feat.sum(dim=1) / (
+            m.sum(dim=1, keepdim=True) + 1e-7
+        )  # (N, C, Hq, Wq)
+
+        return fused_feat, m
+        
+        
 
     def fuse_tempo_feat(self, feat, s_coords, s_P, self_mask=True):
         N, L, C, H, W = feat.shape
@@ -629,7 +674,7 @@ class DSMNet(nn.Module):
             std_pyramid,
         )
 
-    def gen_projection_matrix_pyramid(
+    def gen_projection_matrix_pyramid( # 不同分别率下的K 和P 是不一样的，所以这里输出不同尺度下的K和P
         self, q_K, q_Tcw, s_K, s_Tcw, q_feat_pyramid, ori_h, ori_w
     ):
         N, L = s_K.shape[:2]
@@ -655,7 +700,7 @@ class DSMNet(nn.Module):
             r_P_pyramid.append(r_P)
             s_P_pyramid.append(s_P)
             q_K_pyramid.append(_q_K[:, 0, :, :])
-        return q_P_pyramid, r_P_pyramid, s_P_pyramid, q_K_pyramid
+        return q_P_pyramid, r_P_pyramid, s_P_pyramid, q_K_pyramid  # q_P_pyramid[i] = (N, T, 3, 4) 
 
     def projection(self, coords_pyramid, P_pyramid):
         coords_2d_pyramid = []
@@ -664,7 +709,7 @@ class DSMNet(nn.Module):
             coords_2d_pyramid.append(coords_2d)
         return coords_2d_pyramid
 
-    def relative_Tcw(self, anchor_Tcw, Tcw):
+    def relative_Tcw(self, anchor_Tcw, Tcw): # 把Tcw 的坐标转换到 anchor_Tcw 坐标系下 
         R = anchor_Tcw[:, :3, :3]
         T = anchor_Tcw[:, :3, 3:]
         R_inv = R.permute(0, 2, 1)
@@ -737,7 +782,7 @@ class DSMNet(nn.Module):
             q_K, q_Tcw, s_K, s_Tcw, q_feat_pyramid, H, W
         )
 
-        q_feat_pyramid = q_feat_pyramid[1:]
+        q_feat_pyramid = q_feat_pyramid[1:]  
         q_coords_pyramid = q_coords_pyramid[1:]
         q_mask_pyramid = q_mask_pyramid[1:]
         q_P_pyramid = q_P_pyramid[1:]
@@ -754,6 +799,14 @@ class DSMNet(nn.Module):
         ) = self.fuse_and_fill_holes_pyramid(
             s_feat_pyramid, s_coords_pyramid, s_mask_pyramid, s_P_pyramid
         ) # 每一个像素点在其他source 上对应点的多视角特征融合，并当出现细分辨率没有对应特征时，用粗分辨率进行填补
+        
+
+        
+        q_fusion_feat_list = [self.fuse_source_to_query(f,q_coord , s_P)[0]
+            for f,q_coord, s_P in zip(s_feat_pyramid, q_coords_pyramid, s_P_pyramid)]
+          
+        
+        ########### !!!!! 在这里需要把q_feature_pyramid 和  s_feat_pyramid 进行整合 !!!!!!! ###########
 
         (
             pred_coords1_pyramid,
@@ -806,6 +859,7 @@ class DSMNet(nn.Module):
             gt_coords,
             gt_mask_pyramid[-1],
             torch.sigmoid(score_pyramid[-1]),
+            q_fusion_feat_list
         )
 
     def loss(
@@ -990,18 +1044,18 @@ class DSMNet(nn.Module):
 
 def dsm_net(cfg):
     model = DSMNet(cfg)
-    if "feat_pretrained_path" in cfg and cfg.feat_pretrained_path is not None:
+    if "feat_pretrained_path" in cfg and cfg.feat_pretrained_path is not None: # 加载特征提取器预训练的模型
         model.load_extractor_pretrain(
             cfg.feat_pretrained_path, cfg.bottom_up_pretrain, cfg.BACKBONE
         )
-    if "model_path" in cfg and cfg.model_path is not None:
+    if "model_path" in cfg and cfg.model_path is not None:  # 加载模型的checkpoint
         print("Load model from {}".format(cfg.model_path))
         data = torch.load(cfg.model_path)
         if "state_dict" in data.keys():
-            data = data["state_dict"]
+            data = data["state_dict"]    # 作者在保存时采用了dict 形式 {"state_dir": model.state_dict()}
       
         state_dict = {}
-        for k, v in model.state_dict().items():
+        for k, v in model.state_dict().items():  # K 是参数名 例如 backbone.conv1.weight
             l = len(v.size())
             flag = True
             if k in data:

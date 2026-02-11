@@ -8,7 +8,7 @@ from modules.dataset.sevenscene.sevenscenes import *
 
 
 class Trainer(object):
-    def __init__(self, cfg, model):
+    def __init__(self, cfg, model, kpnet):
         self.reproj_loss = cfg.TRAIN.reproj_loss
         self.reproj_loss_scale = cfg.TRAIN.reproj_loss_scale
         self.reproj_loss_start = cfg.TRAIN.reproj_loss_start
@@ -28,8 +28,14 @@ class Trainer(object):
                 ),
             ]
         )
+        
+        normalize = Normalize(
+                    scale=cfg.MODEL.TRANSFORM.scale,
+                    mean=cfg.MODEL.TRANSFORM.mean,
+                    std=cfg.MODEL.TRANSFORM.std,
+                )
    
-        self.dataset = SevenSceneDataset(cfg.TRAIN.DATASET, transform)
+        self.dataset = SevenSceneDataset(cfg.TRAIN.DATASET, transform, normalize)
 
         self.data_loader = data.DataLoader(
             self.dataset,
@@ -41,6 +47,7 @@ class Trainer(object):
         )
 
         self.model = model 
+        self.kpnet = kpnet
         self.niter = 0
         self.data_loader_iter = iter(self.data_loader)  # 把数据变成迭代器，方便使用next 一个一个获取
       
@@ -54,10 +61,37 @@ class Trainer(object):
                 q, r = next(self.data_loader_iter)
 
             q_img = q["image0"].cuda()  # (N T 3 H W)
+            q_img_ori = q["image0_ori"].cuda()
+            
+            q_Tcw = q["T0"].cuda()
+            q_K = q["K0"].cuda()
+            q_depth = q["depth0"].cuda()
            
             s_img = r["img"].cuda()  # (N L 3 H W)
-
+            s_Tcw = r["pose"].cuda()
+            s_K = r["K"].cuda()
+            s_depth = r["depth"].cuda()
             
-            print("size(q_img) = ", q_img.shape)
-            print("size(s_img) = ", s_img.shape)
+
+            losses, metrics, pred_coords, gt_coords, _, _, q_feat_list = self.model(
+                q_img,
+                q_depth,
+                q_Tcw,
+                q_K,
+                s_img,
+                s_depth,
+                s_Tcw,
+                s_K,
+                s_Tcw[:, 0, :, :],
+            )
+            
+            description_map, invariance_map,keypoints = self.kpnet(q_img_ori,q_feat_list)
+            
+            
+            
+            print("description map = ", description_map)
+            print("invariance map = ", invariance_map)
+            print("keypoint map = ", keypoints)
+            
+            
 
