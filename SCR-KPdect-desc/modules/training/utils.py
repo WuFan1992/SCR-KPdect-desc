@@ -198,3 +198,94 @@ def get_nb_trainable_params(model):
 	nb_params = sum([np.prod(p.size()) for p in model_parameters])
  
 	print('Number of trainable parameters: {:d}'.format(nb_params))
+ 
+ 
+ 
+# Calculate Pose difference 
+
+def so3_log(R):
+    """
+    R: (..., 3, 3)
+    return: (..., 3)  rotation vector
+    """
+    cos_theta = (R.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2
+    cos_theta = torch.clamp(cos_theta, -1.0 + 1e-7, 1.0 - 1e-7)
+    theta = torch.acos(cos_theta)
+
+    wx = R[..., 2, 1] - R[..., 1, 2]
+    wy = R[..., 0, 2] - R[..., 2, 0]
+    wz = R[..., 1, 0] - R[..., 0, 1]
+
+    w = torch.stack([wx, wy, wz], dim=-1)
+
+    small_angle = theta < 1e-5
+
+    A = torch.where(
+        small_angle,
+        0.5 - theta**2 / 12,
+        theta / (2 * torch.sin(theta))
+    )
+
+    omega = A.unsqueeze(-1) * w
+    return omega
+
+
+def se3_log(T):
+    """
+    T: (..., 4, 4)
+    return: (..., 6)  (omega, v)
+    """
+    R = T[..., :3, :3]
+    t = T[..., :3, 3]
+
+    omega = so3_log(R)
+    theta = torch.norm(omega, dim=-1, keepdim=True)
+
+    small_angle = theta < 1e-5
+
+    wx = torch.zeros_like(R)
+    wx[..., 0, 1] = -omega[..., 2]
+    wx[..., 0, 2] =  omega[..., 1]
+    wx[..., 1, 0] =  omega[..., 2]
+    wx[..., 1, 2] = -omega[..., 0]
+    wx[..., 2, 0] = -omega[..., 1]
+    wx[..., 2, 1] =  omega[..., 0]
+
+    I = torch.eye(3, device=T.device).expand_as(R)
+
+    theta_sq = theta ** 2
+    A = torch.where(
+        small_angle,
+        1 - theta_sq / 6,
+        torch.sin(theta) / theta
+    )
+    B = torch.where(
+        small_angle,
+        0.5 - theta_sq / 24,
+        (1 - torch.cos(theta)) / theta_sq
+    )
+
+    V = I + B.unsqueeze(-1) * wx + \
+        ((1 - A) / theta_sq).unsqueeze(-1) * (wx @ wx)
+
+    V_inv = torch.linalg.inv(V)
+    v = (V_inv @ t.unsqueeze(-1)).squeeze(-1)
+
+    return torch.cat([omega, v], dim=-1)
+
+
+def pose_se3_error(T1, T2):
+    """
+    返回 SE(3) 李代数误差的 L2 范数
+    """
+    T_rel = torch.linalg.inv(T1) @ T2
+    xi = se3_log(T_rel)    
+    return torch.norm(xi, dim=-1)
+
+
+def invariance_to_logvar(v, eps=1e-6):
+    """
+    v: (N,) invariance map, must be positive
+    return: log variance s
+    """
+    return - torch.log(v + eps)

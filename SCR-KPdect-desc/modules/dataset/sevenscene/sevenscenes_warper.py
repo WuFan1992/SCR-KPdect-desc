@@ -68,7 +68,6 @@ def spvs_coarse(data, scale = 4):
 
     # 1. misc
     device = data['image0'].device
-    print("data['image0'].squeeze(0).shape = ", data['image0'].squeeze(0).shape)
     N, _, H0, W0 = data['image0'].squeeze(1).shape
     _, _, H1, W1 = data['image1'].squeeze(1).shape
     #scale = 4

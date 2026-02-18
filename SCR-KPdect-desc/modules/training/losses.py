@@ -5,7 +5,9 @@ from modules.dataset.megadepth import megadepth_warper
 
 from modules.training import utils
 
-from third_party.alike_wrapper import extract_alike_kpts
+
+
+from .utils import pose_se3_error
 
 def dual_softmax_loss(X, Y, temp = 0.2):
     if X.size() != Y.size() or X.dim() != 2 or Y.dim() != 2:
@@ -70,42 +72,6 @@ def fine_loss(f1, f2, pts1, pts2, fine_module, ws=7):
 
     return error
 
-
-def alike_distill_loss(kpts, img):
-
-    C, H, W = kpts.shape
-    kpts = kpts.permute(1,2,0) 
-    img = img.permute(1,2,0).expand(-1,-1,3).cpu().numpy() * 255
-
-    with torch.no_grad():
-        alike_kpts = torch.tensor( extract_alike_kpts(img), device=kpts.device )
-        labels = torch.ones((H, W), dtype = torch.long, device = kpts.device) * 64 # -> Default is non-keypoint (bin 64)
-        offsets = (((alike_kpts/8) - (alike_kpts/8).long())*8).long()
-        offsets =  offsets[:, 0] + 8*offsets[:, 1]  # Linear IDX
-        labels[(alike_kpts[:,1]/8).long(), (alike_kpts[:,0]/8).long()] = offsets
-
-    kpts = kpts.view(-1,C)
-    labels = labels.view(-1)
-
-    mask = labels < 64
-    idxs_pos = mask.nonzero().flatten()
-    idxs_neg = (~mask).nonzero().flatten()
-    perm = torch.randperm(idxs_neg.size(0))[:len(idxs_pos)//32]
-    idxs_neg = idxs_neg[perm]
-    idxs = torch.cat([idxs_pos, idxs_neg])
-
-    kpts = kpts[idxs]
-    labels = labels[idxs]
-
-    with torch.no_grad():
-        predicted = kpts.max(dim=-1)[1]
-        acc =  (labels == predicted)
-        acc = acc.sum() / len(acc)
-
-    kpts = F.log_softmax(kpts)
-    loss = F.nll_loss(kpts, labels, reduction = 'mean')
-
-    return loss, acc
 
 
 def keypoint_position_loss(kpts1, kpts2, pts1, pts2, softmax_temp = 1.0):
@@ -222,3 +188,47 @@ def hard_triplet_loss(X,Y, margin = 0.5):
     loss = torch.clamp(margin + dist_pos - hard_neg, min=0.)
 
     return loss.mean()
+
+
+
+def weighted_distance_loss(v1, v2, T1, T2, lambda_reg=1e-6):
+    """
+    d1, d2: (N, D)
+    v1, v2: (N,)
+    T1, T2: (4x4)
+    lambda_reg: small constant to avoid division by zero
+    
+    return: scalar loss L
+    """
+    # viewpoint difference 
+    delta = pose_se3_error(T1, T2)
+    
+        
+    # 1️⃣ 保证正数
+    v1 = F.softplus(v1) + 1e-6
+    v2 = F.softplus(v2) + 1e-6
+
+    # 2️⃣ invariance -> variance
+    sigma2 = 1.0 / v1 + 1.0 / v2  # 推荐融合方式
+
+    # 3️⃣ 计算 log variance
+    s = torch.log(sigma2)
+    
+    
+    # 4️⃣ SE(3) 残差平方
+    dist = torch.sum(delta**2, dim=-1)
+
+    # 5️⃣ 不确定性加权
+    loss = torch.exp(-s) * dist + s
+
+    return loss.mean()
+    
+    
+    
+    
+    
+
+    
+
+    return L
+

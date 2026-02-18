@@ -64,15 +64,19 @@ class KPNet(nn.Module):
         # 目标尺寸（取最后一个特征图）
         target_size = q_feat_list[-1][0].shape[-2:]
 
+
         # resize + 累加
         contact_feat = sum(
-            F.interpolate(q_feat[0].unsqueeze(0),
-                  size=target_size,
-                  mode='bilinear',
-                  align_corners=False)
+            F.interpolate(
+            q_feat,
+            size=target_size,
+            mode='bilinear',
+            align_corners=False
+        )
         for q_feat in q_feat_list
         )
-            
+        
+             
         
         description_map = self.block_fusion(contact_feat)
         invariance_map = self.invariance_head(description_map)
