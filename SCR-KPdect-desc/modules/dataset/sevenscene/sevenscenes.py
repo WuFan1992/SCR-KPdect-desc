@@ -26,7 +26,7 @@ class BaseDataset(Dataset):
         self.load_depth = cfg.load_depth
         # prepare scene_info and pair_info
         self.scene_info = np.load(cfg.npz_path, allow_pickle=True)
-        self.pair_infos = self.scene_info['pair_infos'].copy()
+        self.train_pair_infos = self.scene_info['train_pair_infos'].copy()
         
 
         # for training LoFTR
@@ -41,7 +41,7 @@ class BaseDataset(Dataset):
         
 
     def __len__(self):
-        return len(self.pair_infos)
+        return len(self.train_pair_infos)
     
     def load_query(self, idx, base_dir):
         
@@ -102,7 +102,7 @@ class BaseDataset(Dataset):
         img_tensor=[]
         idx = int(idx)
         # Get the reference index for "idx"th data
-        ref_idxs = self.scene_info["ref_infos"][idx]
+        ref_idxs = self.scene_info["train_ref_infos"][idx]
         
         # For each idx
         for idx in ref_idxs:
@@ -115,6 +115,7 @@ class BaseDataset(Dataset):
                 depth, K = self.crop_depth_func(depth, K)
             
             img, depth, pose, K = self.transform(img, depth, pose, K)
+            
             
             pose_tensor.append(pose)
             K_tensor.append(K)
@@ -146,13 +147,14 @@ class BaseDataset(Dataset):
             "img": np.stack(img_tensor).astype(np.float32).transpose(0, 3, 1, 2),  
         } 
         
+        
         return result
         
             
         
 
     def __getitem__(self, idx):
-        (idx0, idx1) = self.pair_infos[idx % len(self)]
+        (idx0, idx1) = self.train_pair_infos[idx % len(self)]
         idx, idx0, idx1 = int(idx), int(idx0), int(idx1)
         # Get the pair training 
         base_dir = osp.join(self.root_dir, "datasets/head/images") 
@@ -204,13 +206,6 @@ class BaseDataset(Dataset):
         return pair_data, res_ref
         
         
-        
-
-
-
-
-
-
 class SevenSceneDataset(BaseDataset):
     def __init__(self,
                  cfg,
