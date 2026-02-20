@@ -1,17 +1,18 @@
 import torch
 import torch.utils.data as data
-import os.path as osp
-
+import os
+from torch.utils.tensorboard import SummaryWriter
 
 from modules.utils.transform import *
 from modules.dataset.sevenscene.sevenscenes import *
 from modules.dataset.sevenscene import sevenscenes_warper
 from modules.training.losses import *
 from tqdm import tqdm
+import time
 
 
 class Trainer(object):
-    def __init__(self, cfg, model, kpnet):
+    def __init__(self, cfg, model, kpnet, cpkt_save_path, save_ckpt_every = 200):
         self.reproj_loss = cfg.TRAIN.reproj_loss
         self.reproj_loss_scale = cfg.TRAIN.reproj_loss_scale
         self.reproj_loss_start = cfg.TRAIN.reproj_loss_start
@@ -55,16 +56,24 @@ class Trainer(object):
         self.data_loader_iter = iter(self.data_loader)  # 把数据变成迭代器，方便使用next 一个一个获取
         
         self.optimizer = torch.optim.Adam(list(self.kpnet.parameters()), lr=1e-3)
-        self.progress_bar = tqdm(range(0, 32000), desc="Training progress")
+        self.progress_bar = tqdm(range(0, cfg.TRAIN.model_save_iters), desc="Training progress")
+        
+        self.writer = SummaryWriter(cpkt_save_path + f'/logdir/scr_kpdect_' + time.strftime("%Y_%m_%d-%H_%M_%S"))
+        
+        self.save_ckpt_every = save_ckpt_every
+        os.makedirs(cpkt_save_path, exist_ok=True)
+        os.makedirs(cpkt_save_path + '/logdir', exist_ok=True)
+        
+        self.cpkt_save_path = cpkt_save_path
         
 
     def train_iters(self, iter_num):
         
-        
-        if True:
+        for i in range(iter_num):
             try:
                 q, r = next(self.data_loader_iter)
             except StopIteration:
+                # If StopIteration is raised, create a new iterator.
                 self.data_loader_iter = iter(self.data_loader)
                 q, r = next(self.data_loader_iter)
                 
@@ -104,7 +113,8 @@ class Trainer(object):
             s_depth = r["depth"].cuda()
             
             # Scene Coordinates Estimation
-            losses0, metrics0, pred_coords0, gt_coords0, _, _, q_feat_list0 = self.model(
+            with torch.no_grad():
+                losses0, metrics0, pred_coords0, gt_coords0, _, _, q_feat_list0 = self.model(
                 q0_img,
                 q0_depth,
                 q0_Tcw,
@@ -114,10 +124,10 @@ class Trainer(object):
                 s_Tcw,
                 s_K,
                 s_Tcw[:, 0, :, :],
-            )
+                )
             
             
-            losses1, metrics1, pred_coords1, gt_coords1, _, _, q_feat_list1 = self.model(
+                losses1, metrics1, pred_coords1, gt_coords1, _, _, q_feat_list1 = self.model(
                 q1_img,
                 q1_depth,
                 q1_Tcw,
@@ -127,7 +137,13 @@ class Trainer(object):
                 s_Tcw,
                 s_K,
                 s_Tcw[:, 0, :, :],
-            )
+                )
+                
+                q_feat_list0 = [f.detach() for f in q_feat_list0]
+                q_feat_list1 = [f.detach() for f in q_feat_list1]
+                
+
+                
             
             # Keypoint Detection & Description
             description_map0, invariance_map0,keypoints0 = self.kpnet(q0_img_ori,q_feat_list0)
@@ -153,18 +169,37 @@ class Trainer(object):
                 
                 #Compute losses
                 loss_ds, conf = dual_softmax_loss(m0, m1)
-                loss_view = weighted_distance_loss(h0,h1,q0_Tcw[b], q0_Tcw[b])
+                loss_view = weighted_distance_loss(h0,h1,q0_Tcw[b], q1_Tcw[b])
+                
                 
                 
                 loss = loss_ds + loss_view
                 loss_items.append(loss)
+            if len(loss_items) > 0:    
+                loss_mean = sum(loss_items) / len(loss_items)
+                self.optimizer.zero_grad()
+                loss_mean.backward()
+                self.optimizer.step()
+                self.writer.add_scalar('train_loss_patches/l1_loss', loss_mean.item(), i)
+            
+            
+            if (i+1) % self.save_ckpt_every == 0:
+                print("saving iter ", i+1)
+                torch.save(self.kpnet.state_dict(), self.cpkt_save_path  + "/sdr_kpdetect_" + str(iter_num) + ".pth")
                 
-            loss_mean = sum(loss_items) / len(loss_items)
-            self.optimizer.zero_grad()
-            loss_mean.backward()
-            self.optimizer.step()
+            
                 
-            print("loss = ", loss_mean.item())
+            with torch.no_grad():
+                # Progress bar
+                if i % 10 == 0:
+                    self.progress_bar.set_postfix({"Loss": f"{loss_mean.item():.{7}f}"})
+                    self.progress_bar.update(10)
+                    
+            
+            del loss_items
+            del description_map0, description_map1
+            del invariance_map0, invariance_map1
+                
                 
                 
                 

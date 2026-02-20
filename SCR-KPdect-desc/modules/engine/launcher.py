@@ -15,7 +15,7 @@ class Launcher(object):
         self.kpnet = KPNet().cuda()
         
         if not test_only:
-            self.trainer = Trainer(cfg, self.model, self.kpnet)
+            self.trainer = Trainer(cfg, self.model, self.kpnet, cpkt_save_path="./trained_model")
 
         self.tester = None
 

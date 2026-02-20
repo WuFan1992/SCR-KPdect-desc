@@ -54,8 +54,6 @@ class KPNet(nn.Module):
     
     def forward(self, x, q_feat_list):
         
-        # BHWC → BCHW
-        x = x.permute(0, 3, 1, 2)
 
         # don't backprop through normalization
         with torch.no_grad():
@@ -76,12 +74,15 @@ class KPNet(nn.Module):
         for q_feat in q_feat_list
         )
         
-             
+
         
         description_map = self.block_fusion(contact_feat)
         invariance_map = self.invariance_head(description_map)
         
-        keypoints = self.keypoint_head(self._unfold2d(x, ws=8)) #Keypoint map logits
+        ws = min(8, x.shape[-2], x.shape[-1])   # 安全的窗口大小
+        
+        #keypoints = self.keypoint_head(self._unfold2d(x, ws=ws)) #Keypoint map logits
+        keypoints = None
         
         return description_map, invariance_map,keypoints
         
