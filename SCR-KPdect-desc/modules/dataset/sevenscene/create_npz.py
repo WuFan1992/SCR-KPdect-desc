@@ -2,9 +2,17 @@ import os
 import sys
 import numpy as np
 import random
-from colmap_reader import read_points3D_binary, read_extrinsics_binary, read_intrinsics_binary,qvec2rotmat
+import torch
+from modules.dataset.sevenscene.colmap_reader import read_points3D_binary, read_extrinsics_binary, read_intrinsics_binary, qvec2rotmat
 from itertools import combinations
-from utils.scene_utils import focal2fov, getIntrinsic, getExtrinsic
+from modules.utils.scene_utils import focal2fov, getIntrinsic, getExtrinsic
+
+"""
+At the project root path:
+    python -m modules.dataset.sevenscene.create_npz
+
+"""
+
 
 def get_imagepair_index(path):
     """
@@ -34,8 +42,6 @@ def get_imagepair_index(path):
 # 从 img_id 里，根据training set 和 testing set。 在同一个set 里面构建匹配对，并且每一个匹配对都有topk 个reference image,
 # 且无论是训练还是测试，所有的reference 都来自training set
 
-
-
 def construct_pairs_ref(path, train_idx_list, topK: int):
     
     point3d_path = os.path.join(path, "sparse/0/points3D.bin")
@@ -63,6 +69,56 @@ def construct_pairs_ref(path, train_idx_list, topK: int):
         ref_list.append(reference)
         
     return   pair_list, ref_list
+
+"""
+Construct one (query image + k*reference images)
+ 
+"""
+def construct_query_ref(path, train_idx_list, topK: int):
+    
+    point3d_path = os.path.join(path, "sparse/0/points3D.bin")
+    _, _, _, _, img_ids, _  = read_points3D_binary(point3d_path)
+    
+    query_list = []
+    ref_list = []
+    train_idx_list = set(train_idx_list)
+    
+    for p_id in img_ids:
+        imgs = img_ids[p_id]   # image ids observing this 3D point
+        imgs_in_train_idx = [x for x in imgs if x in train_idx_list]
+        imgs_in_test_idx = [y for y in imgs if y not in train_idx_list]
+        
+        
+        # check the data availability
+        if len(imgs_in_train_idx) < topK + 2:      # a pair + topk references
+            continue
+        
+        if len(imgs_in_test_idx) == 0:
+            continue
+        
+        for test_img_idx in imgs_in_test_idx:
+            query = test_img_idx
+            #For each query, take the whole reference images in the training data
+            rest = imgs_in_train_idx
+            random.shuffle(rest)
+            reference = random.sample(rest, topK)
+            query_list.append(query)
+            ref_list.append(reference)
+    
+    # Keep the unique index in query (each query image participate only once the test) work for all pytorch version 
+    seen = set()
+    unique_indices = []
+
+    for i, q in enumerate(query_list):
+        if q not in seen:
+            seen.add(q)
+            unique_indices.append(i)
+
+    query_list = [query_list[i] for i in unique_indices]
+    ref_list   = [ref_list[i] for i in unique_indices]
+
+    return query_list, ref_list
+
 
       
     
@@ -160,19 +216,21 @@ def readSceneInfo(path):
 
 def create_npz(data_path, save_path):
     
-    
     # Get the image/depth path
     res = readSceneInfo(data_path) 
-    
-    pair_list, ref_list = construct_pairs_ref(data_path, res["train_idx_list"], topK=5) 
+    # Training pair + references
+    train_pair_list, train_ref_list = construct_pairs_ref(data_path, res["train_idx_list"], topK=5) 
+    # Testing query + reference
+    query_list, query_ref_list = construct_query_ref(data_path, res["train_idx_list"], topK=5)
     
     # write data into npz file
     assert len(res["image_name_list"]) == len(res["depth_name_list"]) == len(res["intrinsics_list"]) == len(res["pose_list"]), \
         "image/depth/intrinsics/poses must have the same number of elements"
         
-    pair_infos = np.array(pair_list, dtype=object)
-    ref_infos =  np.array(ref_list, dtype=object)
-    print("ref infos = ", ref_infos)
+    train_pair_infos = np.array(train_pair_list, dtype=object)
+    train_ref_infos =  np.array(train_ref_list, dtype=object)
+    query_infos = np.array(query_list, dtype=object)
+    query_ref_infos =  np.array(query_ref_list, dtype=object)
     image_paths = np.array(res["image_name_list"], dtype=object)
     depth_paths = np.array(res["depth_name_list"], dtype=object)
     
@@ -181,8 +239,10 @@ def create_npz(data_path, save_path):
 
     np.savez(
         save_path,
-        pair_infos=pair_infos,
-        ref_infos=ref_infos,
+        train_pair_infos=train_pair_infos,
+        train_ref_infos=train_ref_infos,
+        test_query_infos=query_infos,
+        test_query_ref_infos=query_ref_infos,
         image_paths=image_paths,
         depth_paths=depth_paths,
         intrinsics=intrinsics,
@@ -191,8 +251,8 @@ def create_npz(data_path, save_path):
     
 
 if __name__ == "__main__":
-    data_path = "../../../datasets/head"
-    save_path = "./head_7scene.npz"
+    data_path = "datasets/head"
+    save_path = "weights/head_7scene_train_test.npz"
     create_npz(data_path, save_path)    
 
 
