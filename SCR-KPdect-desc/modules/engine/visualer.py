@@ -15,6 +15,11 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 
+
+import torchvision.utils as vutils
+
+
+
 class InterpolateSparse2d(nn.Module):
     """ Efficiently interpolate tensor at given sparse 2D positions. """ 
     def __init__(self, mode = 'bicubic', align_corners = False): 
@@ -239,6 +244,33 @@ class Visualer():
         
         return pos
     
+    def NMS_min(self, x, threshold=0.05, kernel_size=5):
+        B, _, H, W = x.shape
+        pad = kernel_size // 2
+
+        # 用负号实现 MinPool
+        local_min = -nn.MaxPool2d(
+            kernel_size=kernel_size,
+            stride=1,
+            padding=pad
+        )(-x)
+
+        # 极小值条件
+        pos_mask = (x == local_min) & (x < threshold)
+
+        pos_batched = [k.nonzero()[..., 1:].flip(-1) for k in pos_mask]
+
+        pad_val = max([len(k) for k in pos_batched]) if len(pos_batched) > 0 else 0
+
+        pos = torch.zeros((B, pad_val, 2), dtype=torch.long, device=x.device)
+
+        for b in range(len(pos_batched)):
+            pos[b, :len(pos_batched[b]), :] = pos_batched[b]
+
+        return pos
+    
+    
+    
     def match(self, feats1, feats2, min_cossim = 0.82):
         cossim = feats1 @ feats2.t()
         cossim_t = feats2 @ feats1.t()
@@ -294,20 +326,29 @@ class Visualer():
         
         description_map = F.normalize(description_map, dim=1)
         
+        heat_min = inv_map_orisize.amin(dim=(2, 3), keepdim=True)
+        heat_max = inv_map_orisize.amax(dim=(2, 3), keepdim=True)
+        heat = (inv_map_orisize - heat_min) / (heat_max - heat_min + 1e-6)
         
-        heat = inv_map_orisize.squeeze().detach().cpu().numpy()
-
-        heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-6)
+        print("heat min: ", heat.min().item())
+        print("heat max: ", heat.max().item())
+        
+        #heat = inv_map_orisize.squeeze().detach().cpu().numpy()
+        #heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-6)
+        
+        
         plt.figure(figsize=(6, 6))
-        plt.imshow(heat, cmap='jet')
+        plt.imshow(heat.squeeze().detach().cpu().numpy(), cmap='jet')
         plt.colorbar()
         plt.axis('off')
         plt.show()
 
 		#Convert logits to heatmap and extract kpts
         
-        mkpts = self.NMS(inv_map_orisize, threshold = 0.99, kernel_size=5)
+        #mkpts = self.NMS(inv_map_orisize, threshold = 0.99, kernel_size=5)
         
+        mkpts = self.NMS_min(heat, threshold = 0.3, kernel_size=5)
+
         
         
 
@@ -362,7 +403,9 @@ class Visualer():
         mkpts_x = mkpts_x[mask]
         mkpts_y = mkpts_y[mask]
 
-        img_draw[mkpts_y, mkpts_x] = (0,255,0)
+        #img_draw[mkpts_y, mkpts_x] = (0,255,0)
+        for x_pt, y_pt in zip(mkpts_x, mkpts_y):
+            cv2.circle(img_draw, (x_pt, y_pt), radius=3, color=(0,255,0), thickness=-1)
 
         cv2.imshow("kpts", img_draw)
         cv2.waitKey(0)
@@ -371,26 +414,15 @@ class Visualer():
         
         
         
-        
-        
-
-
 		#Interpolate descriptors at kpts positions
         feats = self.interpolator(description_map, mkpts, H = _H1, W = _W1)
         
-        #print("feats shape = ", feats.shape)
-
 		#L2-Normalize
         feats = F.normalize(feats, dim=-1)
         
         valid = scores > 0
         
-        
-        #print("mkpts[b][valid[b] = ", mkpts[0][valid[0]])
-        #print("scores = ", scores[0][valid[0]])
-        #print("descriptors", feats[0][valid[0]])
-
-        
+                
         return [  
 				   {'keypoints': mkpts[b][valid[b]],
 					'scores': scores[b][valid[b]],
@@ -432,6 +464,18 @@ class Visualer():
             s_K = ref_imgs["K"]
             s_depth = ref_imgs["depth"]
             s_img_ori = ref_imgs["img_ori"]
+            
+            A = q_img.squeeze(0).squeeze(0).unsqueeze(0)
+            all_imgs = torch.cat([A, torch.from_numpy(s_img).cuda()], dim=0)
+
+            grid = vutils.make_grid(all_imgs, nrow=3, normalize=True)
+
+            plt.imshow(grid.permute(1,2,0).cpu())
+            plt.axis("off")
+            plt.show() 
+            
+            
+            
             
             s_img =  torch.from_numpy(np.expand_dims(s_img, axis=(0))).cuda()
             s_K =  torch.from_numpy(np.expand_dims(s_K, axis=(0))).cuda()
@@ -478,12 +522,12 @@ class Visualer():
                 
                 #description_map0, invariance_map0 = self.kpnet(q_img_ori,q_feat_list0)
                 #description_map1, invariance_map1 = self.kpnet(s_img_ori[:,1,:,:],q_feat_list1)
-                #out0 = self.detectAndCompute(q_img_ori,q_feat_list0)[0]
+                out0 = self.detectAndCompute(q_img_ori,q_feat_list0)[0]
                 
                 #print("out0 =", out0)
                 
                 
-                out1 = self.detectAndCompute(s_img_ori[:,1,:,:],q_feat_list1)[0]
+                #out1 = self.detectAndCompute(s_img_ori[:,1,:,:],q_feat_list1)[0]
                 
 
                 

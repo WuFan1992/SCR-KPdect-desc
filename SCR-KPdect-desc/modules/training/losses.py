@@ -209,44 +209,53 @@ def hard_triplet_loss(X,Y, margin = 0.5):
 
 
 
-def weighted_distance_loss(v1, v2, T1, T2, lambda_reg=1e-6):
-    """
-    d1, d2: (N, D)
-    v1, v2: (N,)
-    T1, T2: (4x4)
-    lambda_reg: small constant to avoid division by zero
-    
-    return: scalar loss L
-    """
-    # viewpoint difference 
-    delta = pose_se3_error(T1, T2)
-    
-        
-    # 1️⃣ 保证正数
-    v1 = F.softplus(v1) + 1e-6
-    v2 = F.softplus(v2) + 1e-6
+def invariance_pose_loss(m0, m1, h0, h1, T0, T1, beta):
 
-    # 2️⃣ invariance -> variance
-    sigma2 = 1.0 / v1 + 1.0 / v2  # 推荐融合方式
+    # -------------------------------------------------
+    # 1️⃣ descriptor residual (pixel-wise)
+    # -------------------------------------------------
+    desc_dist = ((m0 - m1) ** 2).sum(dim=1)  # (N,)
 
-    # 3️⃣ 计算 log variance
-    s = torch.log(sigma2)
-    
-    
-    # 4️⃣ SE(3) 残差平方
-    dist = torch.sum(delta**2, dim=-1)
+    # -------------------------------------------------
+    # 2️⃣ pose strength (global per pair)
+    # -------------------------------------------------
+    delta = pose_se3_error(T0, T1)           # (B,6)
+    alpha = torch.norm(delta, dim=-1)        # (B,)
 
-    # 5️⃣ 不确定性加权
-    loss = torch.exp(-s) * dist + s
+    alpha = alpha / (alpha.mean().detach() + 1e-6)
+
+    # -------------------------------------------------
+    # 3️⃣ log variance prediction
+    # h0, h1 are raw outputs (log sigma2)
+    # -------------------------------------------------
+    log_sigma2_0 = h0   # (N,)
+    log_sigma2_1 = h1
+
+    # -------------------------------------------------
+    # 4️⃣ pose baseline
+    # -------------------------------------------------
+    log_sigma2_pose = torch.log(1 + beta * alpha)
+
+    # expand pose term to match pixel count
+    alpha = alpha.view(-1)
+    log_sigma2_pose = log_sigma2_pose.repeat_interleave(
+        desc_dist.shape[0] // alpha.shape[0]
+    )
+
+    # total variance
+    log_sigma2 = log_sigma2_0 + log_sigma2_1 + log_sigma2_pose
+
+    # -------------------------------------------------
+    # 5️⃣ heteroscedastic loss
+    # -------------------------------------------------
+    loss = torch.exp(-log_sigma2) * desc_dist + log_sigma2
 
     return loss.mean()
     
     
     
-    
-    
 
     
 
-    return L
+ 
 

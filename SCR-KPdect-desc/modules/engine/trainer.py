@@ -190,7 +190,7 @@ class Trainer(object):
                 #Compute losses
                 #loss_ds, conf = dual_softmax_loss(m0, m1)
                 loss_ds, conf = weighted_dual_softmax_loss(m0, m1, h0, h1)
-                loss_view = weighted_distance_loss(h0,h1,q0_Tcw[b], q1_Tcw[b])
+                loss_view = invariance_pose_loss(m0,m1,h0,h1,q0_Tcw[b], q1_Tcw[b], self.kpnet.beta)
                 
                 
                 
