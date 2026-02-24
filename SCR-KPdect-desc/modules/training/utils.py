@@ -268,7 +268,7 @@ def se3_log(T):
     V = I + B.unsqueeze(-1) * wx + \
         ((1 - A) / theta_sq).unsqueeze(-1) * (wx @ wx)
 
-    V_inv = torch.linalg.inv(V)
+    V_inv = torch.linalg.pinv(V)
     v = (V_inv @ t.unsqueeze(-1)).squeeze(-1)
 
     return torch.cat([omega, v], dim=-1)

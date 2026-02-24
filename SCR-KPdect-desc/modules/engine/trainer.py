@@ -10,9 +10,27 @@ from modules.training.losses import *
 from tqdm import tqdm
 import time
 
+import matplotlib.pyplot as plt
+def save_overlay(image, heatmap, save_path):
+    """
+    image: (1,H,W) or (3,H,W)
+    heatmap: (1,H,W)
+    """
+    img = image.detach().cpu().permute(1,2,0).numpy()
+    heat = heatmap.squeeze().detach().cpu().numpy()
+
+    heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-6)
+
+    plt.figure(figsize=(6,6))
+    plt.imshow(img, cmap='gray')
+    plt.imshow(heat, cmap='jet', alpha=0.5)
+    plt.axis('off')
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
 
 class Trainer(object):
-    def __init__(self, cfg, model, kpnet, cpkt_save_path, save_ckpt_every = 200):
+    def __init__(self, cfg, model, kpnet, cpkt_save_path, save_ckpt_every = 1000):
         self.reproj_loss = cfg.TRAIN.reproj_loss
         self.reproj_loss_scale = cfg.TRAIN.reproj_loss_scale
         self.reproj_loss_start = cfg.TRAIN.reproj_loss_start
@@ -146,11 +164,13 @@ class Trainer(object):
                 
             
             # Keypoint Detection & Description
-            description_map0, invariance_map0,keypoints0 = self.kpnet(q0_img_ori,q_feat_list0)
-            description_map1, invariance_map1,keypoints1 = self.kpnet(q1_img_ori,q_feat_list1)
+            description_map0, invariance_map0 = self.kpnet(q0_img_ori,q_feat_list0)
+            description_map1, invariance_map1 = self.kpnet(q1_img_ori,q_feat_list1)
             
                 
             loss_items = []
+            loss_dss =[]
+            loss_views = []
             
             for b in range(len(positive_md_coarse)):
                 
@@ -168,19 +188,35 @@ class Trainer(object):
                 h1 = invariance_map1[b, 0, pts1[:,1].long(), pts1[:,0].long()]
                 
                 #Compute losses
-                loss_ds, conf = dual_softmax_loss(m0, m1)
+                #loss_ds, conf = dual_softmax_loss(m0, m1)
+                loss_ds, conf = weighted_dual_softmax_loss(m0, m1, h0, h1)
                 loss_view = weighted_distance_loss(h0,h1,q0_Tcw[b], q1_Tcw[b])
                 
                 
                 
                 loss = loss_ds + loss_view
                 loss_items.append(loss)
+                loss_dss.append(loss_ds)
+                loss_views.append(loss_view)
+                
             if len(loss_items) > 0:    
                 loss_mean = sum(loss_items) / len(loss_items)
+                loss_ds_mean = sum(loss_dss) / len(loss_dss)
+                loss_view_mean = sum(loss_views) / len(loss_views)
                 self.optimizer.zero_grad()
                 loss_mean.backward()
                 self.optimizer.step()
                 self.writer.add_scalar('train_loss_patches/l1_loss', loss_mean.item(), i)
+                self.writer.add_scalar('train_loss_patches/ds_loss', loss_ds_mean.item(), i)
+                self.writer.add_scalar('train_loss_patches/view_loss', loss_view_mean.item(), i)
+                
+            
+            img0 = q0_img_ori[0].permute(2,0,1).clone()
+            img0 = (img0 - img0.min()) / (img0.max() - img0.min())
+            if i % 25 == 0:
+                save_overlay(img0, invariance_map0[0], f"save_img/overlay_{i}.png")
+                
+                
             
             
             if (i+1) % self.save_ckpt_every == 0:
@@ -193,6 +229,8 @@ class Trainer(object):
                 # Progress bar
                 if i % 10 == 0:
                     self.progress_bar.set_postfix({"Loss": f"{loss_mean.item():.{7}f}"})
+                    print("loss_ds = ", loss_ds.item())
+                    print("loss_view = ", loss_view.item())
                     self.progress_bar.update(10)
                     
             

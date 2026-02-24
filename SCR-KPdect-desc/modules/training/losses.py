@@ -9,6 +9,8 @@ from modules.training import utils
 
 from .utils import pose_se3_error
 
+
+"""
 def dual_softmax_loss(X, Y, temp = 0.2):
     if X.size() != Y.size() or X.dim() != 2 or Y.dim() != 2:
         raise RuntimeError('Error: X and Y shapes must match and be 2D matrices')
@@ -28,6 +30,22 @@ def dual_softmax_loss(X, Y, temp = 0.2):
            F.nll_loss(conf_matrix21, target)
 
     return loss, conf
+    
+    """
+def weighted_dual_softmax_loss(m0, m1, h0, h1, temp=0.2):
+    if h0.dim() == 0:
+        h0 = h0.unsqueeze(0)
+    if h1.dim() == 0:
+        h1 = h1.unsqueeze(0)
+        
+    dist_mat = (m0 @ m1.t()) * temp
+    weighted_dist = dist_mat * (h0[:, None] * h1[None, :])
+    conf_matrix12 = F.log_softmax(weighted_dist, dim=1)
+    conf_matrix21 = F.log_softmax(weighted_dist.t(), dim=1)
+    target = torch.arange(len(m0), device=m0.device)
+    loss = F.nll_loss(conf_matrix12, target) + F.nll_loss(conf_matrix21, target)
+    return loss, None
+
 
 def smooth_l1_loss(input, target, beta=2.0, size_average=True):
     diff = torch.abs(input - target)

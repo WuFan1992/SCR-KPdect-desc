@@ -10,6 +10,35 @@ from modules.utils.reader import load_one_img
 from modules.utils.transform import *
 from modules.utils.scene_utils import *
 
+import torch.nn.functional as F
+
+import matplotlib.pyplot as plt
+
+
+class InterpolateSparse2d(nn.Module):
+    """ Efficiently interpolate tensor at given sparse 2D positions. """ 
+    def __init__(self, mode = 'bicubic', align_corners = False): 
+        super().__init__()
+        self.mode = mode
+        self.align_corners = align_corners
+
+    def normgrid(self, x, H, W):  # 把像素坐标转换到 [-1, 1] 区间
+        """ Normalize coords to [-1,1]. """
+        return 2. * (x/(torch.tensor([W-1, H-1], device = x.device, dtype = x.dtype))) - 1.
+
+    def forward(self, x, pos, H, W):
+        """
+        Input
+            x: [B, C, H, W] feature tensor
+            pos: [B, N, 2] tensor of positions
+            H, W: int, original resolution of input 2d positions -- used in normalization [-1,1]
+
+        Returns
+            [B, N, C] sampled channels at 2d positions
+        """
+        grid = self.normgrid(pos, H, W).unsqueeze(-2).to(x.dtype)
+        x = F.grid_sample(x, grid, mode = self.mode , align_corners = False)
+        return x.permute(0,2,3,1).squeeze(-2)
 
 
 class Visualer():
@@ -60,6 +89,12 @@ class Visualer():
         self.crop_depth_func = None
         self.ref_topk = cfg.TRAIN.DATASET.ref_topk
         self.pad_image = cfg.TRAIN.DATASET.pad_image
+        
+        self.interpolator = InterpolateSparse2d('bicubic')
+        
+        
+        self.top_k = 4096
+        
 
     def crop_img(self, img, K=None, no_none=None):
         return crop_by_intrinsic(img, self.img_K, self.depth_K), self.depth_K
@@ -185,7 +220,182 @@ class Visualer():
         
         
         return result
+    
+    def NMS(self, x, threshold = 0.05, kernel_size = 5):
+        B, _, H, W = x.shape
+        pad=kernel_size//2
+        local_max = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=pad)(x)
+     
+        pos = (x == local_max) & (x > threshold)
         
+        pos_batched = [k.nonzero()[..., 1:].flip(-1) for k in pos]
+
+        pad_val = max([len(x) for x in pos_batched])
+        pos = torch.zeros((B, pad_val, 2), dtype=torch.long, device=x.device)
+        
+        #Pad kpts and build (B, N, 2) tensor
+        for b in range(len(pos_batched)):
+            pos[b, :len(pos_batched[b]), :] = pos_batched[b]
+        
+        return pos
+    
+    def match(self, feats1, feats2, min_cossim = 0.82):
+        cossim = feats1 @ feats2.t()
+        cossim_t = feats2 @ feats1.t()
+        
+        _, match12 = cossim.max(dim=1)
+        _, match21 = cossim_t.max(dim=1)
+        
+        idx0 = torch.arange(len(match12), device=match12.device)
+        mutual = match21[match12] == idx0
+        
+        if min_cossim > 0:
+            cossim, _ = cossim.max(dim=1)
+            good = cossim > min_cossim
+            idx0 = idx0[mutual & good]
+            idx1 = match12[mutual & good]
+        else:
+            idx0 = idx0[mutual]
+            idx1 = match12[mutual]
+        
+        return idx0, idx1
+    
+    def detectAndCompute(self, x, q_feat_list, top_k = None):
+        """
+			Compute sparse keypoints & descriptors. Supports batched mode.
+
+			input:
+				x -> torch.Tensor(B, C, H, W): grayscale or rgb image
+				top_k -> int: keep best k features
+			return:
+				List[Dict]: 
+					'keypoints'    ->   torch.Tensor(N, 2): keypoints (x,y)
+					'scores'       ->   torch.Tensor(N,): keypoint scores
+					'descriptors'  ->   torch.Tensor(N, 64): local features
+     """
+        if top_k is None: top_k = self.top_k
+        # 如果输入是 NHWC，转成 NCHW
+        if x.shape[-1] == 3:
+            x = x.permute(0, 3, 1, 2).contiguous()
+        
+        B, _, _H1, _W1 = x.shape
+        
+        description_map, invariance_map = self.kpnet(x,q_feat_list)
+        
+
+       
+        
+        inv_map_orisize =  F.interpolate(
+                    invariance_map,
+                    scale_factor=8,
+                    mode='bilinear',      # 推荐 heatmap 用 bilinear
+                    align_corners=False
+                )
+        
+        description_map = F.normalize(description_map, dim=1)
+        
+        
+        heat = inv_map_orisize.squeeze().detach().cpu().numpy()
+
+        heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-6)
+        plt.figure(figsize=(6, 6))
+        plt.imshow(heat, cmap='jet')
+        plt.colorbar()
+        plt.axis('off')
+        plt.show()
+
+		#Convert logits to heatmap and extract kpts
+        
+        mkpts = self.NMS(inv_map_orisize, threshold = 0.99, kernel_size=5)
+        
+        
+        
+
+
+        # ===== 1️⃣ 处理图像 =====
+        # image: torch.Size([480, 640, 3])
+        img = x[0].permute(1,2,0).detach().cpu().numpy()
+
+        
+
+
+        # 如果是 float 且范围 0~1，需要转成 uint8
+        if img.dtype != np.uint8:
+            img = (img - img.min()) / (img.max() - img.min() + 1e-6)
+            img = (img * 255).astype(np.uint8)
+
+        # OpenCV 用 BGR，如果你原图是 RGB：
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+        # ===== 2️⃣ 处理关键点 =====
+        # keypoints: [1, N, 2]
+        kpts = mkpts[0].detach().cpu().numpy().astype(np.int32)
+        img_draw = img.copy()
+
+
+        
+        _nearest = InterpolateSparse2d('nearest')
+        
+        scores = _nearest(inv_map_orisize, mkpts, _H1, _W1).squeeze(-1)
+        scores[torch.all(mkpts == 0, dim=-1)] = -1
+                
+        #Select top-k features
+        idxs = torch.argsort(-scores)
+        mkpts_x  = torch.gather(mkpts[...,0], -1, idxs)[:, :self.top_k]
+        mkpts_y  = torch.gather(mkpts[...,1], -1, idxs)[:, :self.top_k]
+        
+        mkpts = torch.cat([mkpts_x[...,None], mkpts_y[...,None]], dim=-1)
+        scores = torch.gather(scores, -1, idxs)[:, :self.top_k]
+        
+        ########################
+        
+        mkpts_x = mkpts_x[0].detach().cpu().numpy().astype(np.int32)
+        mkpts_y = mkpts_y[0].detach().cpu().numpy().astype(np.int32)
+
+        H, W = img_draw.shape[:2]
+
+        mask = (
+            (mkpts_x >= 0) & (mkpts_x < W) &
+            (mkpts_y >= 0) & (mkpts_y < H)
+        )
+
+        mkpts_x = mkpts_x[mask]
+        mkpts_y = mkpts_y[mask]
+
+        img_draw[mkpts_y, mkpts_x] = (0,255,0)
+
+        cv2.imshow("kpts", img_draw)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        
+        
+        
+        
+        
+        
+
+
+		#Interpolate descriptors at kpts positions
+        feats = self.interpolator(description_map, mkpts, H = _H1, W = _W1)
+        
+        #print("feats shape = ", feats.shape)
+
+		#L2-Normalize
+        feats = F.normalize(feats, dim=-1)
+        
+        valid = scores > 0
+        
+        
+        #print("mkpts[b][valid[b] = ", mkpts[0][valid[0]])
+        #print("scores = ", scores[0][valid[0]])
+        #print("descriptors", feats[0][valid[0]])
+
+        
+        return [  
+				   {'keypoints': mkpts[b][valid[b]],
+					'scores': scores[b][valid[b]],
+					'descriptors': feats[b][valid[b]]} for b in range(B) 
+			   ]
             
         
     def run_inf(self):
@@ -229,7 +439,8 @@ class Visualer():
             s_img_ori =  torch.from_numpy(np.expand_dims(s_img_ori, axis=(0))).cuda()
             s_depth =  torch.from_numpy(np.expand_dims(s_depth, axis=(0))).cuda()
 
-
+            self.sdr_model.eval()
+            self.kpnet.eval()
             
             with torch.no_grad():
                 _, _, _, _, _, _, q_feat_list0 = self.sdr_model(
@@ -255,8 +466,8 @@ class Visualer():
                 _, _, _, _, _, _, q_feat_list1 = self.sdr_model(
                 ref_img,
                 ref_depth,
-                q_T,
-                q_K,
+                ref_T,
+                ref_K,
                 s_img,
                 s_depth,
                 s_T,
@@ -265,10 +476,27 @@ class Visualer():
                 )
                 
                 
-                description_map0, invariance_map0,_ = self.kpnet(q_img_ori,q_feat_list0)
-                description_map1, invariance_map1,_ = self.kpnet(s_img_ori[:,1,:,:],q_feat_list1)
+                #description_map0, invariance_map0 = self.kpnet(q_img_ori,q_feat_list0)
+                #description_map1, invariance_map1 = self.kpnet(s_img_ori[:,1,:,:],q_feat_list1)
+                #out0 = self.detectAndCompute(q_img_ori,q_feat_list0)[0]
                 
-                print("description_map 0 = ", description_map0)
+                #print("out0 =", out0)
+                
+                
+                out1 = self.detectAndCompute(s_img_ori[:,1,:,:],q_feat_list1)[0]
+                
+
+                
+                #idxs0, idxs1 = self.match(out0['descriptors'], out1['descriptors'], min_cossim=-1)
+                
+                #print("idxs 0 = ", idxs0)
+                
+                
+                
+
+                
+                
+
                 
             
             
@@ -336,6 +564,6 @@ def load_config(yaml_path: str):
 if __name__ == "__main__":
     yaml_path = "modules/dataset/sevenscene/7scenes.yaml"
     cfg = load_config(yaml_path)
-    visualer = Visualer(cfg, "trained_model/first_training_2000.pth")
+    visualer = Visualer(cfg, "trained_model/sdr_kpdetect_2000.pth")
     visualer.run_inf()
 
