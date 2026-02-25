@@ -194,7 +194,7 @@ def build_test_samples(data_path, train_idx_list, pose_list, topK):
         if len(related_train) < topK:
             continue
 
-        query, q_topK = build_topk_poses_from_train(
+        _, q_topK = build_topk_poses_from_train(
             int(test_img_idx),
             int(test_img_idx),
             pose_list,
@@ -203,7 +203,7 @@ def build_test_samples(data_path, train_idx_list, pose_list, topK):
             mode='test'
         )
 
-        query_list.append(query)
+        query_list.append(test_img_idx)
         ref_list.append(q_topK)
 
     return query_list, ref_list
