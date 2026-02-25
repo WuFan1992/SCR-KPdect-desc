@@ -13,31 +13,201 @@ At the project root path:
 
 """
 
+def select_topk_poses(T_query, T_list, K=5, rot_weight=0.5):
+    """
+    T_query: [4,4] numpy array
+    T_list: list of [4,4] numpy arrays
+    K: number of closest poses to select
+    rot_weight: weight for rotation distance
+    
+    return: indices of top-K closest poses in T_list
+    """
+    t_dist_list = []
+    r_dist_list = []
 
-def get_imagepair_index(path):
+    R_q = T_query[:3, :3]
+    t_q = T_query[:3, 3]
+
+    # 遍历 list
+    for T in T_list:
+        R_i = T[:3, :3]
+        t_i = T[:3, 3]
+
+        # 平移距离
+        t_dist = np.linalg.norm(t_i - t_q)
+        t_dist_list.append(t_dist)
+
+        # 旋转距离
+        R_rel = R_i @ R_q.T
+        trace = np.trace(R_rel)
+        cos_theta = np.clip((trace - 1) / 2, -1.0, 1.0)
+        r_dist = np.arccos(cos_theta)
+        r_dist_list.append(r_dist)
+
+    t_dist_arr = np.array(t_dist_list)
+    r_dist_arr = np.array(r_dist_list)
+    dist = t_dist_arr + rot_weight * r_dist_arr
+    
+    N = len(dist)
+
+    if N == 0:
+        return []
+
+    K = min(K, N)
+
+    # 选 top-K
+    topk_indices = np.argpartition(dist, K-1)[:K]
+    topk_indices = topk_indices[np.argsort(dist[topk_indices])]
+
+    return topk_indices
+
+def build_topk_poses_from_train(i, j, pose_list, train_img_index, K=5, rot_weight=0.5, mode='train'):
     """
-     Get the image pair index 
+    i, j: indices in pose_list
+    pose_list: list of [4,4] numpy arrays
+    train_img_index: list of indices in pose_list to consider for top-K
+    K: number of closest poses to select
+    rot_weight: weight for rotation distance
+    mode: 'train' or 'test'
+
+    return:
+        T_query: pose_list[i]
+        topk_indices: list of indices in pose_list corresponding to top-K closest poses
     """
-    point3d_path = os.path.join(path, "sparse/0/points3D.bin")
+    # 1️⃣ 查询 pose
+    T_query = pose_list[i]
+
+    # 2️⃣ 构建候选 pose list
+    if mode == 'train':
+        # 排除 i 和 j
+        filtered_indices = [idx for idx in train_img_index if idx not in (i, j)]
+    elif mode == 'test':
+        # 不排除 i 和 j
+        filtered_indices = list(train_img_index)
+    else:
+        raise ValueError(f"Invalid mode '{mode}', must be 'train' or 'test'")
+
+    filtered_pose_list = [pose_list[int(idx)] for idx in filtered_indices]
+
+    # 3️⃣ 查找 top-K
+    topk_in_filtered = select_topk_poses(T_query, filtered_pose_list, K=K, rot_weight=rot_weight)
+
+    # 4️⃣ 映射回 pose_list 的原索引
+    topk_indices = [filtered_indices[int(idx)] for idx in topk_in_filtered]
+
+    return T_query, topk_indices
+
+def build_train_samples(data_path, train_idx_list, pose_list, topK):
+    
+    point3d_path = os.path.join(data_path, "sparse/0/points3D.bin")
     _, _, _, _, img_ids, _  = read_points3D_binary(point3d_path)
     
-    pair_set = set()   # Use the set to remove the duplicate
-
+    pair_list = []
+    ref_list = []
+    train_idx_list = set(train_idx_list)
+    
     for p_id in img_ids:
         imgs = img_ids[p_id]   # image ids observing this 3D point
-        # Combination every 2 elements
-        for a, b in combinations(imgs, 2):
-            # 无序对规范化
-            if abs(a-b) < 30:
-                continue
+        imgs_in_train_idx = [x for x in imgs if x in train_idx_list]
+        
+        if len(imgs_in_train_idx) < topK + 2:      # a pair + topk references
+            continue
+        imgs_in_train_idx_shuffle =  imgs_in_train_idx.copy()
+        random.shuffle(imgs_in_train_idx_shuffle)
+        
+        pair = (int(imgs_in_train_idx_shuffle[0]), int(imgs_in_train_idx_shuffle[1]))
+        
+        
+        pair0, pair0_topK = build_topk_poses_from_train(pair[0], pair[1], pose_list, imgs_in_train_idx, topK )
+        pair1, pair1_topK = build_topk_poses_from_train(pair[1], pair[0], pose_list, imgs_in_train_idx, topK)
+        
+        pair_topK = (pair0_topK, pair1_topK)
+        pair_list.append(pair)
+        ref_list.append(pair_topK)
+        
+    return pair_list, ref_list   #  ref_list = [([2 , 7, 18 ], [13,15,18]), ([xxx], [xxxx]),.....]
+
+"""
+def build_test_samples(data_path, train_idx_list, pose_list, topK):
+    
+    point3d_path = os.path.join(data_path, "sparse/0/points3D.bin")
+    _, _, _, _, img_ids, _  = read_points3D_binary(point3d_path)
+    
+    query_list = []
+    ref_list = []
+    train_idx_list = set(train_idx_list)
+    
+    for p_id in img_ids:
+        imgs = img_ids[p_id]   # image ids observing this 3D point
+        imgs_in_train_idx = [x for x in imgs if x in train_idx_list]
+        imgs_in_test_idx = [y for y in imgs if y not in train_idx_list]
+        
+        
+        # check the data availability
+        if len(imgs_in_train_idx) < topK + 2:      # a pair + topk references
+            continue
+        
+        if len(imgs_in_test_idx) == 0:
+            continue
+        
+        for test_img_idx in imgs_in_test_idx:
+            query, q_topK = build_topk_poses_from_train(int(test_img_idx), int(test_img_idx), pose_list,imgs_in_train_idx, topK, mode='test')
             
-            if a < b:
-                pair_set.add((a, b))
-            else:
-                pair_set.add((b, a))
-    # 转回 list[list]
-    imgs_pairs = [list(pair) for pair in pair_set]
-    return imgs_pairs
+        
+        query_list.append(query)
+        ref_list.append(q_topK)
+        
+    return query_list, ref_list  #[[2,13,18], [12,14,15], ....]  
+"""
+def build_test_samples(data_path, train_idx_list, pose_list, topK):
+
+    point3d_path = os.path.join(data_path, "sparse/0/points3D.bin")
+    _, _, _, _, img_ids, _  = read_points3D_binary(point3d_path)
+
+    train_idx_list = set(train_idx_list)
+
+    # 1️⃣ 收集所有 test 图像（去重）
+    all_test_imgs = set()
+
+    for p_id in img_ids:
+        imgs = img_ids[p_id]
+        for img in imgs:
+            if img not in train_idx_list:
+                all_test_imgs.add(img)
+
+    query_list = []
+    ref_list = []
+
+    # 2️⃣ 只对每个 test 图像算一次
+    for test_img_idx in all_test_imgs:
+
+        # 找与它共享3D点的train图像
+        related_train = set()
+
+        for p_id in img_ids:
+            imgs = img_ids[p_id]
+            if test_img_idx in imgs:
+                for img in imgs:
+                    if img in train_idx_list:
+                        related_train.add(img)
+
+        if len(related_train) < topK:
+            continue
+
+        query, q_topK = build_topk_poses_from_train(
+            int(test_img_idx),
+            int(test_img_idx),
+            pose_list,
+            list(related_train),
+            K=topK,
+            mode='test'
+        )
+
+        query_list.append(query)
+        ref_list.append(q_topK)
+
+    return query_list, ref_list
+      
 
 # 从 img_id 里，根据training set 和 testing set。 在同一个set 里面构建匹配对，并且每一个匹配对都有topk 个reference image,
 # 且无论是训练还是测试，所有的reference 都来自training set
@@ -219,9 +389,10 @@ def create_npz(data_path, save_path):
     # Get the image/depth path
     res = readSceneInfo(data_path) 
     # Training pair + references
-    train_pair_list, train_ref_list = construct_pairs_ref(data_path, res["train_idx_list"], topK=5) 
+    #train_pair_list, train_ref_list = construct_pairs_ref(data_path, res["train_idx_list"], topK=5) 
+    train_pair_list, train_ref_list = build_train_samples(data_path, res["train_idx_list"], res["pose_list"], topK=5) 
     # Testing query + reference
-    query_list, query_ref_list = construct_query_ref(data_path, res["train_idx_list"], topK=5)
+    query_list, query_ref_list = build_test_samples(data_path, res["train_idx_list"], res["pose_list"],  topK=5)
     
     # write data into npz file
     assert len(res["image_name_list"]) == len(res["depth_name_list"]) == len(res["intrinsics_list"]) == len(res["pose_list"]), \

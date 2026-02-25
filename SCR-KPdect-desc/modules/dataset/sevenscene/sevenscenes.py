@@ -96,59 +96,62 @@ class BaseDataset(Dataset):
         
     def load_references(self, idx, base_dir):
         
-        pose_tensor= []
-        K_tensor=[]
-        depth_tensor=[]
-        img_tensor=[]
+        results = []
+        
         idx = int(idx)
         # Get the reference index for "idx"th data
         ref_idxs = self.scene_info["train_ref_infos"][idx]
         
+        for ref_idx in ref_idxs:
+            pose_tensor= []
+            K_tensor=[]
+            depth_tensor=[]
+            img_tensor=[]
         # For each idx
-        for idx in ref_idxs:
-            idx=int(idx)
-            img, depth, pose, K = load_one_img(base_dir, self.scene_info, idx, read_img=True)
+            for idx in ref_idx:
+                idx=int(idx)
+                img, depth, pose, K = load_one_img(base_dir, self.scene_info, idx, read_img=True)
         
-            if self.crop_img_func is not None:  # 如果要裁剪img，同时更新相机内参
-                img, K = self.crop_img_func(img, K)
-            if self.crop_depth_func is not None: #如果要裁剪深度图，同时更新相机内参
-                depth, K = self.crop_depth_func(depth, K)
+                if self.crop_img_func is not None:  # 如果要裁剪img，同时更新相机内参
+                    img, K = self.crop_img_func(img, K)
+                if self.crop_depth_func is not None: #如果要裁剪深度图，同时更新相机内参
+                    depth, K = self.crop_depth_func(depth, K)
             
-            img, depth, pose, K = self.transform(img, depth, pose, K)
+                img, depth, pose, K = self.transform(img, depth, pose, K)
             
             
-            pose_tensor.append(pose)
-            K_tensor.append(K)
-            depth_tensor.append(depth)
-            img_tensor.append(img)
+                pose_tensor.append(pose)
+                K_tensor.append(K)
+                depth_tensor.append(depth)
+                img_tensor.append(img)
 
-            if len(pose_tensor) == self.ref_topk:
-                break
-        if self.pad_image and len(pose_tensor) < self.ref_topk:
-            pose_tensor = pose_tensor + [pose_tensor[0]] * (
-                self.ref_topk - len(pose_tensor)
-            )
-            K_tensor = K_tensor + [K_tensor[0]] * (self.ref_topk - len(K_tensor))
-            depth_tensor = depth_tensor + [depth_tensor[0]] * (
-                self.ref_topk - len(depth_tensor)
-            )
-            img_tensor = img_tensor + [img_tensor[0]] * (
-                self.ref_topk - len(img_tensor)
-            )
+                if len(pose_tensor) == self.ref_topk:
+                    break
+            if self.pad_image and len(pose_tensor) < self.ref_topk:
+                pose_tensor = pose_tensor + [pose_tensor[0]] * (
+                    self.ref_topk - len(pose_tensor)
+                )
+                K_tensor = K_tensor + [K_tensor[0]] * (self.ref_topk - len(K_tensor))
+                depth_tensor = depth_tensor + [depth_tensor[0]] * (
+                    self.ref_topk - len(depth_tensor)
+                )
+                img_tensor = img_tensor + [img_tensor[0]] * (
+                    self.ref_topk - len(img_tensor)
+                )
         
-        pose_tensor = np.stack(pose_tensor).astype(np.float32)  # 将list 变成 nadrray
-        K_tensor = np.stack(K_tensor).astype(np.float32)
-        depth_tensor = np.stack(depth_tensor).astype(np.float32)
+            pose_tensor = np.stack(pose_tensor).astype(np.float32)  # 将list 变成 nadrray
+            K_tensor = np.stack(K_tensor).astype(np.float32)
+            depth_tensor = np.stack(depth_tensor).astype(np.float32)
 
-        result = {
-            "pose": pose_tensor,
-            "K": K_tensor,
-            "depth": depth_tensor,
-            "img": np.stack(img_tensor).astype(np.float32).transpose(0, 3, 1, 2),  
-        } 
+            result = {
+                "pose": pose_tensor,
+                "K": K_tensor,
+                "depth": depth_tensor,
+                "img": np.stack(img_tensor).astype(np.float32).transpose(0, 3, 1, 2),  
+            } 
+            results.append(result)
         
-        
-        return result
+        return results
         
             
         
@@ -201,9 +204,9 @@ class BaseDataset(Dataset):
         }
         
         # Get the reference images
-        res_ref = self.load_references(idx,base_dir)
+        res_refs = self.load_references(idx,base_dir)
         
-        return pair_data, res_ref
+        return pair_data, res_refs
         
         
 class SevenSceneDataset(BaseDataset):

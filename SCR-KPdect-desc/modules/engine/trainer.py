@@ -125,10 +125,16 @@ class Trainer(object):
             
             
            # Reference images (for coordinates estimation)
-            s_img = r["img"].cuda()  # (N L 3 H W)
-            s_Tcw = r["pose"].cuda()
-            s_K = r["K"].cuda()
-            s_depth = r["depth"].cuda()
+            s0_img = r[0]["img"].cuda()  # (N L 3 H W)
+            s0_Tcw = r[0]["pose"].cuda()
+            s0_K = r[0]["K"].cuda()
+            s0_depth = r[0]["depth"].cuda()
+            
+            
+            s1_img = r[1]["img"].cuda()  # (N L 3 H W)
+            s1_Tcw = r[1]["pose"].cuda()
+            s1_K = r[1]["K"].cuda()
+            s1_depth = r[1]["depth"].cuda()
             
             # Scene Coordinates Estimation
             with torch.no_grad():
@@ -137,11 +143,11 @@ class Trainer(object):
                 q0_depth,
                 q0_Tcw,
                 q0_K,
-                s_img,
-                s_depth,
-                s_Tcw,
-                s_K,
-                s_Tcw[:, 0, :, :],
+                s0_img,
+                s0_depth,
+                s0_Tcw,
+                s0_K,
+                s0_Tcw[:, 0, :, :],
                 )
             
             
@@ -150,11 +156,11 @@ class Trainer(object):
                 q1_depth,
                 q1_Tcw,
                 q1_K,
-                s_img,
-                s_depth,
-                s_Tcw,
-                s_K,
-                s_Tcw[:, 0, :, :],
+                s1_img,
+                s1_depth,
+                s1_Tcw,
+                s1_K,
+                s1_Tcw[:, 0, :, :],
                 )
                 
                 q_feat_list0 = [f.detach() for f in q_feat_list0]

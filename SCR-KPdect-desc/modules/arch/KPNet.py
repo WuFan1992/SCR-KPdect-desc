@@ -31,26 +31,9 @@ class KPNet(nn.Module):
         self.invariance_head = nn.Sequential(
 										BasicLayer(256, 256, 1, padding=0),
 										BasicLayer(256, 256, 1, padding=0),
-										nn.Conv2d (256, 1, 1),
-										nn.Sigmoid()
+										nn.Conv2d (256, 1, 1)
 									)
-        self.keypoint_head = nn.Sequential(
-										BasicLayer(64, 64, 1, padding=0),
-										BasicLayer(64, 64, 1, padding=0),
-										BasicLayer(64, 64, 1, padding=0),
-										nn.Conv2d (64, 65, 1),
-									)
-        
-    def _unfold2d(self, x, ws = 2):
-        """
-			Unfolds tensor in 2D with desired ws (window size) and concat the channels
-	    """
-        B, C, H, W = x.shape
-        x = x.unfold(2,  ws , ws).unfold(3, ws,ws)                             \
-			.reshape(B, C, H//ws, W//ws, ws**2)
-        
-        return x.permute(0, 1, 4, 2, 3).reshape(B, -1, H//ws, W//ws)
-    
+        self.beta = nn.Parameter(torch.tensor(0.1)) 
     
     def forward(self, x, q_feat_list):
         
@@ -74,17 +57,16 @@ class KPNet(nn.Module):
         for q_feat in q_feat_list
         )
         
-
+        #print("contact_feat min:", contact_feat.min().item())
+        #print("contact_feat max:", contact_feat.max().item())
+        
         
         description_map = self.block_fusion(contact_feat)
         invariance_map = self.invariance_head(description_map)
         
-        ws = min(8, x.shape[-2], x.shape[-1])   # 安全的窗口大小
+
         
-        #keypoints = self.keypoint_head(self._unfold2d(x, ws=ws)) #Keypoint map logits
-        keypoints = None
-        
-        return description_map, invariance_map,keypoints
+        return description_map, invariance_map
         
         
         
