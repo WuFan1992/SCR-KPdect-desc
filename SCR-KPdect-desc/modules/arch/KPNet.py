@@ -23,6 +23,15 @@ class KPNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.norm = nn.InstanceNorm2d(1)
+        
+         # 新增：1x1 conv 用于 cat 后的通道压缩
+        self.fusion_conv = nn.Conv2d(
+            256 * 4,   # cat 后通道数
+            256,               # 压缩回 256
+            kernel_size=1
+        )
+        
+        
         self.block_fusion =  nn.Sequential(
 										BasicLayer(256, 256, stride=1),
 										BasicLayer(256, 256, stride=1),
@@ -47,6 +56,8 @@ class KPNet(nn.Module):
 
 
         # resize + 累加
+        
+        """
         contact_feat = sum(
             F.interpolate(
             q_feat,
@@ -56,9 +67,25 @@ class KPNet(nn.Module):
         )
         for q_feat in q_feat_list
         )
+        """
         
-        #print("contact_feat min:", contact_feat.min().item())
-        #print("contact_feat max:", contact_feat.max().item())
+        # 1️⃣ resize
+        resized_feats = [
+            F.interpolate(
+                q_feat,
+                size=target_size,
+                mode='bilinear',
+                align_corners=False
+            )
+            for q_feat in q_feat_list
+        ]
+
+        # 2️⃣ cat 替代 sum
+        contact_feat = torch.cat(resized_feats, dim=1)
+
+        # 3️⃣ 1x1 conv 融合
+        contact_feat = self.fusion_conv(contact_feat)
+        
         
         
         description_map = self.block_fusion(contact_feat)
